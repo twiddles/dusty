@@ -96,6 +96,7 @@ dusty ~/Documents
 | `↓` / `j` | Move cursor down |
 | `→` / `Enter` / `l` | Enter selected directory |
 | `←` / `Backspace` / `h` | Go back to parent directory |
+| `d` | Delete highlighted file or folder |
 | `s` | Toggle sort (size/name) |
 | `Home` | Return to root directory |
 | `q` / `Ctrl+C` | Quit application |

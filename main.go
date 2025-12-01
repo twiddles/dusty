@@ -24,21 +24,38 @@ type DirInfo struct {
 
 // Model represents the application state
 type model struct {
-	rootDir     *DirInfo
-	currentDir  *DirInfo
-	cursor      int
-	scanning    bool
-	scanError   error
-	width       int
-	height      int
-	startTime   time.Time
-	sortBy      string // "size" or "name"
+	rootDir        *DirInfo
+	currentDir     *DirInfo
+	cursor         int
+	scanning       bool
+	scanError      error
+	width          int
+	height         int
+	startTime      time.Time
+	sortBy         string // "size" or "name"
+	statusMsg      string
+	statusExpiry   time.Time
+	deleting       bool
+	deleteSpinner  int
+	deleteTarget   *DirInfo
+	deleteFilename string
 }
 
 type scanCompleteMsg struct {
-	root  *DirInfo
-	err   error
+	root *DirInfo
+	err  error
 }
+
+type deleteCompleteMsg struct {
+	target   *DirInfo
+	err      error
+	filename string
+}
+
+type deleteProgressMsg struct{}
+
+// Spinner frames
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // Styles
 var (
@@ -161,8 +178,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanError = msg.err
 		return m, nil
 
+	case deleteProgressMsg:
+		// Animate spinner
+		if m.deleting {
+			m.deleteSpinner = (m.deleteSpinner + 1) % len(spinnerFrames)
+			return m, deleteProgress()
+		}
+		return m, nil
+
+	case deleteCompleteMsg:
+		m.deleting = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Error deleting: %v", msg.err)
+			m.statusExpiry = time.Now().Add(5 * time.Second)
+		} else {
+			m.statusMsg = fmt.Sprintf("Deleted: %s", msg.filename)
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+
+			// Remove from parent's children
+			if m.currentDir != nil && len(m.currentDir.Children) > 0 {
+				for i, child := range m.currentDir.Children {
+					if child == msg.target {
+						m.currentDir.Children = append(
+							m.currentDir.Children[:i],
+							m.currentDir.Children[i+1:]...,
+						)
+						if m.cursor >= len(m.currentDir.Children) && m.cursor > 0 {
+							m.cursor--
+						}
+						break
+					}
+				}
+				// Recalculate parent sizes
+				m.recalculateSizes(m.currentDir)
+			}
+		}
+		return m, nil
+
 	case tea.KeyMsg:
-		if m.scanning {
+		if m.scanning || m.deleting {
 			if msg.String() == "ctrl+c" || msg.String() == "q" {
 				return m, tea.Quit
 			}
@@ -219,6 +273,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "home":
 			m.currentDir = m.rootDir
 			m.cursor = 0
+
+		case "d":
+			// Delete file/folder asynchronously
+			if m.currentDir != nil && len(m.currentDir.Children) > 0 {
+				m.deleteTarget = m.currentDir.Children[m.cursor]
+				m.deleteFilename = filepath.Base(m.deleteTarget.Path)
+				m.deleting = true
+				m.deleteSpinner = 0
+				return m, tea.Batch(deleteFile(m.deleteTarget), deleteProgress())
+			}
 		}
 	}
 
@@ -249,7 +313,8 @@ func (m *model) sortChildren(dir *DirInfo) {
 func (m model) View() string {
 	if m.scanning {
 		elapsed := time.Since(m.startTime).Seconds()
-		return fmt.Sprintf("\n  Scanning directories... %.1fs\n\n  Press 'q' to quit\n", elapsed)
+		spinner := spinnerFrames[int(elapsed*10)%len(spinnerFrames)]
+		return fmt.Sprintf("\n  %s Scanning directories... %.1fs\n\n  Press 'q' to quit\n", spinner, elapsed)
 	}
 
 	if m.scanError != nil {
@@ -324,9 +389,18 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Help text
+	// Status message, delete spinner, or help text
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  ↑/↓: Navigate | ←/→: Enter/Exit | s: Sort | Home: Root | q: Quit"))
+	if m.deleting {
+		spinner := spinnerFrames[m.deleteSpinner]
+		deleteMsg := fmt.Sprintf("%s Deleting %s...", spinner, m.deleteFilename)
+		b.WriteString(sizeStyle.Render(deleteMsg))
+	} else if m.statusMsg != "" && time.Now().Before(m.statusExpiry) {
+		b.WriteString(m.statusMsg)
+	} else {
+		// Help text
+		b.WriteString(helpStyle.Render("  ↑/↓: Navigate | ←/→: Enter/Exit | d: Delete | s: Sort | Home: Root | q: Quit"))
+	}
 	b.WriteString("\n")
 
 	return b.String()
@@ -346,6 +420,49 @@ func formatSize(bytes int64) string {
 	}
 
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// deleteFileOrDir deletes a file or directory recursively
+func deleteFileOrDir(path string) error {
+	return os.RemoveAll(path)
+}
+
+// recalculateSizes recalculates sizes up the directory tree
+func (m *model) recalculateSizes(dir *DirInfo) {
+	if dir == nil {
+		return
+	}
+
+	// Recalculate current directory size
+	var totalSize int64
+	for _, child := range dir.Children {
+		totalSize += child.Size
+	}
+	dir.Size = totalSize
+
+	// Recursively update parent sizes
+	if dir.Parent != nil {
+		m.recalculateSizes(dir.Parent)
+	}
+}
+
+// deleteFile performs async deletion and returns a command
+func deleteFile(target *DirInfo) tea.Cmd {
+	return func() tea.Msg {
+		err := os.RemoveAll(target.Path)
+		return deleteCompleteMsg{
+			target:   target,
+			err:      err,
+			filename: filepath.Base(target.Path),
+		}
+	}
+}
+
+// deleteProgress animates the spinner
+func deleteProgress() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return deleteProgressMsg{}
+	})
 }
 
 func main() {
