@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build binaries
+        run: |
+          # Linux
+          GOOS=linux GOARCH=amd64 go build -o dusty-linux-amd64 -ldflags="-s -w"
+          GOOS=linux GOARCH=arm64 go build -o dusty-linux-arm64 -ldflags="-s -w"
+
+          # macOS
+          GOOS=darwin GOARCH=amd64 go build -o dusty-darwin-amd64 -ldflags="-s -w"
+          GOOS=darwin GOARCH=arm64 go build -o dusty-darwin-arm64 -ldflags="-s -w"
+
+          # Windows
+          GOOS=windows GOARCH=amd64 go build -o dusty-windows-amd64.exe -ldflags="-s -w"
+          GOOS=windows GOARCH=arm64 go build -o dusty-windows-arm64.exe -ldflags="-s -w"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dusty-linux-amd64
+            dusty-linux-arm64
+            dusty-darwin-amd64
+            dusty-darwin-arm64
+            dusty-windows-amd64.exe
+            dusty-windows-arm64.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
