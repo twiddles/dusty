@@ -4,6 +4,23 @@
 
 A beautiful terminal-based directory size analyzer, similar to Linux's `du` command or Windows TreeSize Free. Built with Go and features an interactive TUI (Terminal User Interface).
 
+## Example
+
+```
+ Dusty - /Users/username/projects
+Total Size: 2.5 GB | Sort: size
+
+      1.2 GB  48.0% [█████████████████████░] node_modules/
+    850.3 MB  34.0% [███████████████████░░░] build/
+    250.0 MB  10.0% [██████████░░░░░░░░░░░░] .git/
+    125.5 MB   5.0% [█████░░░░░░░░░░░░░░░░░] dist/
+     50.2 MB   2.0% [██░░░░░░░░░░░░░░░░░░░░] docs/
+      8.5 MB   0.3% [░░░░░░░░░░░░░░░░░░░░░░] src/
+    512.0 KB   0.0% [░░░░░░░░░░░░░░░░░░░░░░] README.md
+
+  ↑/↓: Navigate | ←/→: Enter/Exit | s: Sort | Home: Root | q: Quit
+```
+
 ## Features
 
 - **Recursive Directory Scanning**: Calculates cumulative storage usage for all folders and files
@@ -82,23 +99,6 @@ dusty ~/Documents
 | `s` | Toggle sort (size/name) |
 | `Home` | Return to root directory |
 | `q` / `Ctrl+C` | Quit application |
-
-## Example Output
-
-```
- Dusty - /Users/username/projects
-Total Size: 2.5 GB | Sort: size
-
-      1.2 GB  48.0% [█████████████████████░] node_modules/
-    850.3 MB  34.0% [███████████████████░░░] build/
-    250.0 MB  10.0% [██████████░░░░░░░░░░░░] .git/
-    125.5 MB   5.0% [█████░░░░░░░░░░░░░░░░░] dist/
-     50.2 MB   2.0% [██░░░░░░░░░░░░░░░░░░░░] docs/
-      8.5 MB   0.3% [░░░░░░░░░░░░░░░░░░░░░░] src/
-    512.0 KB   0.0% [░░░░░░░░░░░░░░░░░░░░░░] README.md
-
-  ↑/↓: Navigate | ←/→: Enter/Exit | s: Sort | Home: Root | q: Quit
-```
 
 ## How It Works
 
