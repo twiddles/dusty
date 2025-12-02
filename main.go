@@ -39,12 +39,25 @@ type model struct {
 	deleteSpinner  int
 	deleteTarget   *DirInfo
 	deleteFilename string
+	scanProgress   *DirInfo // Current state during scanning
+	filesScanned   int
+	dirsScanned    int
+	totalSize      int64
 }
 
 type scanCompleteMsg struct {
 	root *DirInfo
 	err  error
 }
+
+type scanProgressMsg struct {
+	root         *DirInfo
+	filesScanned int
+	dirsScanned  int
+	totalSize    int64
+}
+
+type scanTickMsg struct{}
 
 type deleteCompleteMsg struct {
 	target   *DirInfo
@@ -98,8 +111,20 @@ func initialModel(path string) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return scanDirectory
+	return tea.Batch(scanDirectory, scanTick)
 }
+
+// scanTick sends periodic ticks during scanning
+func scanTick() tea.Msg {
+	time.Sleep(time.Second)
+	return scanTickMsg{}
+}
+
+// Global progress channel for scanning
+var progressChan = make(chan scanProgressMsg, 100)
+
+// Global root reference for progress updates
+var currentRoot *DirInfo
 
 // scanDirectory scans the directory tree
 func scanDirectory() tea.Msg {
@@ -108,12 +133,97 @@ func scanDirectory() tea.Msg {
 		path = os.Args[1]
 	}
 
-	root, err := calculateDirSize(path, nil)
+	filesScanned := 0
+	dirsScanned := 0
+	currentRoot = nil
+	root, err := calculateDirSizeWithProgress(path, nil, &filesScanned, &dirsScanned)
 	if err != nil && root == nil {
 		return scanCompleteMsg{nil, err}
 	}
 
+	// Send final progress update
+	if currentRoot != nil {
+		select {
+		case progressChan <- scanProgressMsg{
+			root:         currentRoot,
+			filesScanned: filesScanned,
+			dirsScanned:  dirsScanned,
+			totalSize:    currentRoot.Size,
+		}:
+		default:
+		}
+	}
+
 	return scanCompleteMsg{root, nil}
+}
+
+// calculateDirSizeWithProgress recursively calculates directory sizes with progress tracking
+func calculateDirSizeWithProgress(path string, parent *DirInfo, filesScanned, dirsScanned *int) (*DirInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	dirInfo := &DirInfo{
+		Path:   path,
+		Parent: parent,
+		IsDir:  info.IsDir(),
+	}
+
+	// Set root reference on first call
+	if parent == nil && currentRoot == nil {
+		currentRoot = dirInfo
+	}
+
+	if !info.IsDir() {
+		dirInfo.Size = info.Size()
+		*filesScanned++
+		return dirInfo, nil
+	}
+
+	*dirsScanned++
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		dirInfo.Error = err
+		return dirInfo, nil
+	}
+
+	var totalSize int64
+	for _, entry := range entries {
+		childPath := filepath.Join(path, entry.Name())
+
+		child, err := calculateDirSizeWithProgress(childPath, dirInfo, filesScanned, dirsScanned)
+		if err != nil {
+			// Skip entries we can't access
+			continue
+		}
+
+		dirInfo.Children = append(dirInfo.Children, child)
+		totalSize += child.Size
+
+		// After completing each child of root, send progress update
+		if dirInfo == currentRoot && currentRoot != nil {
+			dirInfo.Size = totalSize // Update root size incrementally
+			select {
+			case progressChan <- scanProgressMsg{
+				root:         currentRoot,
+				filesScanned: *filesScanned,
+				dirsScanned:  *dirsScanned,
+				totalSize:    totalSize,
+			}:
+			default:
+			}
+		}
+	}
+
+	dirInfo.Size = totalSize
+
+	// Sort children by size (descending)
+	sort.Slice(dirInfo.Children, func(i, j int) bool {
+		return dirInfo.Children[i].Size > dirInfo.Children[j].Size
+	})
+
+	return dirInfo, nil
 }
 
 // calculateDirSize recursively calculates directory sizes
@@ -176,6 +286,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rootDir = msg.root
 		m.currentDir = msg.root
 		m.scanError = msg.err
+		m.scanProgress = nil
+		return m, nil
+
+	case scanTickMsg:
+		// Check for progress updates from the channel
+		if m.scanning {
+			select {
+			case progress := <-progressChan:
+				m.scanProgress = progress.root
+				m.filesScanned = progress.filesScanned
+				m.dirsScanned = progress.dirsScanned
+				m.totalSize = progress.totalSize
+			default:
+			}
+			return m, scanTick
+		}
 		return m, nil
 
 	case deleteProgressMsg:
@@ -314,7 +440,38 @@ func (m model) View() string {
 	if m.scanning {
 		elapsed := time.Since(m.startTime).Seconds()
 		spinner := spinnerFrames[int(elapsed*10)%len(spinnerFrames)]
-		return fmt.Sprintf("\n  %s Scanning directories... %.1fs\n\n  Press 'q' to quit\n", spinner, elapsed)
+
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("\n  %s Scanning directories... %.1fs\n\n", spinner, elapsed))
+
+		if m.scanProgress != nil {
+			b.WriteString(fmt.Sprintf("  Files: %d | Directories: %d\n", m.filesScanned, m.dirsScanned))
+			b.WriteString(fmt.Sprintf("  Current size: %s\n\n", formatSize(m.totalSize)))
+
+			// Show top 5 largest items found so far
+			if len(m.scanProgress.Children) > 0 {
+				b.WriteString("  Largest items found:\n")
+				limit := 5
+				if len(m.scanProgress.Children) < limit {
+					limit = len(m.scanProgress.Children)
+				}
+				for i := 0; i < limit; i++ {
+					child := m.scanProgress.Children[i]
+					name := filepath.Base(child.Path)
+					if child.IsDir {
+						name += "/"
+					}
+					b.WriteString(fmt.Sprintf("    %s  %s\n",
+						sizeStyle.Render(fmt.Sprintf("%10s", formatSize(child.Size))),
+						name))
+				}
+			}
+		} else {
+			b.WriteString("  Files: 0 | Directories: 0\n")
+		}
+
+		b.WriteString("\n  Press 'q' to quit\n")
+		return b.String()
 	}
 
 	if m.scanError != nil {
@@ -420,11 +577,6 @@ func formatSize(bytes int64) string {
 	}
 
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
-// deleteFileOrDir deletes a file or directory recursively
-func deleteFileOrDir(path string) error {
-	return os.RemoveAll(path)
 }
 
 // recalculateSizes recalculates sizes up the directory tree
