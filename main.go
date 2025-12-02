@@ -226,54 +226,6 @@ func calculateDirSizeWithProgress(path string, parent *DirInfo, filesScanned, di
 	return dirInfo, nil
 }
 
-// calculateDirSize recursively calculates directory sizes
-func calculateDirSize(path string, parent *DirInfo) (*DirInfo, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-
-	dirInfo := &DirInfo{
-		Path:   path,
-		Parent: parent,
-		IsDir:  info.IsDir(),
-	}
-
-	if !info.IsDir() {
-		dirInfo.Size = info.Size()
-		return dirInfo, nil
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		dirInfo.Error = err
-		return dirInfo, nil
-	}
-
-	var totalSize int64
-	for _, entry := range entries {
-		childPath := filepath.Join(path, entry.Name())
-
-		child, err := calculateDirSize(childPath, dirInfo)
-		if err != nil {
-			// Skip entries we can't access
-			continue
-		}
-
-		dirInfo.Children = append(dirInfo.Children, child)
-		totalSize += child.Size
-	}
-
-	dirInfo.Size = totalSize
-
-	// Sort children by size (descending)
-	sort.Slice(dirInfo.Children, func(i, j int) bool {
-		return dirInfo.Children[i].Size > dirInfo.Children[j].Size
-	})
-
-	return dirInfo, nil
-}
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
